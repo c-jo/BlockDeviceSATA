@@ -1,0 +1,251 @@
+/*
+ * Copyright (c) 2025, Chris Johns
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the copyright holder nor the names of their
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include "swis.h"
+
+#include "Global/NewErrors.h"
+#include "Global/Services.h"
+#include "Global/OSMisc.h"
+
+#include "SyncLib/synclib.h"
+#include "DebugLib/DebugLib.h"
+
+#include "Interface/BlockDevices.h"
+#include "Interface/ATA.h"
+
+#undef ATA_Initialise
+#define ATA_Initialise 0x00059780
+#undef ATA_Control
+#define ATA_Control 0x00059781
+#undef ATA_Enumerate
+#define ATA_Enumerate 0x00059782
+#undef ATA_Op
+#define ATA_Op 0x00059783
+#undef ATA_PacketOp
+#define ATA_PacketOp 0x00059784
+
+
+/** Parameter blocks for device control commands */
+typedef uint8_t ataop_param_device_control_t;
+
+/** Parameter blocks for CHS and 28-bit LBA commands */
+typedef struct
+{
+  uint8_t features;
+  uint8_t sector_count;
+  uint8_t lba0;
+  uint8_t lba1;
+  uint8_t lba2;
+  uint8_t device;
+  uint8_t command;
+}
+ataop_param_lba28_t;
+
+/** Parameter blocks for 48-bit LBA commands */
+typedef struct
+{
+  uint8_t features;
+  uint8_t sector_count0;
+  uint8_t sector_count1;
+  uint8_t lba0;
+  uint8_t lba1;
+  uint8_t lba2;
+  uint8_t lba3;
+  uint8_t lba4;
+  uint8_t lba5;
+  uint8_t device;
+  uint8_t command;
+}
+ataop_param_lba48_t;
+
+/** Control blocks for packet operations */
+typedef struct
+{
+  uint8_t operation_code;
+  uint8_t service_action;
+  uint8_t lba3;
+  uint8_t lba2;
+  uint8_t lba1;
+  uint8_t lba0;
+  uint8_t length3;
+  uint8_t length2;
+  uint8_t length1;
+  uint8_t length0;
+  uint8_t reserved;
+  uint8_t control;
+}
+atapacketop_control_t;
+
+/* ATA commands */
+enum
+{
+  ATACOMMAND_RESET_DEVICE            = 0x08,
+  ATACOMMAND_READ_SECTORS            = 0x20,
+  ATACOMMAND_READ_SECTORS_EXT        = 0x24,
+  ATACOMMAND_READ_DMA_EXT            = 0x25,
+  ATACOMMAND_WRITE_SECTORS           = 0x30,
+  ATACOMMAND_WRITE_SECTORS_EXT       = 0x34,
+  ATACOMMAND_WRITE_DMA_EXT           = 0x35,
+  ATACOMMAND_READ_VERIFY_SECTORS     = 0x40,
+  ATACOMMAND_READ_VERIFY_SECTORS_EXT = 0x42,
+  ATACOMMAND_EXECUTE_DEVICE_DIAGNOSTIC = 0x90,
+  ATACOMMAND_PACKET                  = 0xA0,
+  ATACOMMAND_IDENTIFY_PACKET_DEVICE  = 0xA1,
+  ATACOMMAND_READ_DMA                = 0xC8,
+  ATACOMMAND_WRITE_DMA               = 0xCA,
+  ATACOMMAND_STANDBY                 = 0xE2,
+  ATACOMMAND_IDLE                    = 0xE3,
+  ATACOMMAND_CHECK_POWER_MODE        = 0xE5,
+  ATACOMMAND_IDENTIFY_DEVICE         = 0xEC,
+};
+
+/* Bits in the device byte of ATA commands */
+#define DEVICE_MAGIC 0xA0 /**< These bits must always be set for compatibility with older drives */
+#define DEVICE_LBA   0x40 /**< Set this in read/write commands, unless drive only supports CHS addressing */
+#define DEVICE_DEV   0x10 /**< Indicates slave device in PATA */
+
+/* A quick macro to silence compiler warnings about unused parameters */
+#define IGNORE(x) do { (void)(x); } while(0)
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+  _kernel_oserror *e = 0;
+
+  synclib_init();
+
+  /* set up debugging */
+  debug_initialise(Module_Title, "<BlockDeviceSTA$DebugLog>", "");
+  //debug_set_device(FILE_OUTPUT);
+  //debug_set_device(HAL_OUTPUT);
+  debug_set_device(PRINTF_OUTPUT);
+  debug_set_stamp_debug(FALSE);
+
+  IGNORE(cmd_tail);
+  IGNORE(podule_base);
+  IGNORE(pw);
+
+  unsigned handle=0, spec;
+
+  while (
+    0 == _swix(ATA_Enumerate, _INR(0,1)|_OUTR(1,2),
+               ATAEnumerate_Drives, handle, &handle, &spec)
+    && 0 != handle)
+  {
+    printf("Handle: %d Spec:%x\n", handle, spec);
+
+    if (!(spec & ATAEnumerate_PacketDevice))
+    {
+      unsigned cpid  = (spec & ATAEnumerate_CPIDMask)     >> ATAEnumerate_CPIDShift;
+      unsigned devid = (spec & ATAEnumerate_DeviceIDMask) >> ATAEnumerate_DeviceIDShift;
+
+    uint32_t status, remain;
+    ataop_param_lba28_t params = {
+      .device = DEVICE_MAGIC,
+      .command = ATACOMMAND_IDENTIFY_DEVICE
+    };
+
+    uint16_t info[256];
+
+    _kernel_oserror *e = _swix(ATA_Op, _INR(0,5)|_OUTR(0,1),
+                 ATAOp_NoDRDY |
+                    (devid << ATAOp_DeviceIDShift) |
+                    (cpid << ATAOp_CPIDShift) |
+                    ATAOp_TransRead,
+                 7,
+                 (uint8_t *) &params,
+                 (uint8_t *) &info,
+                 sizeof info,
+                 100,
+                 &status, &remain);
+    if (e)
+      printf("  error:%s\n", e->errmess);
+    else
+      printf("  status:%x remain:%x\n", status, remain);
+  }
+
+}
+  return e;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+  IGNORE(fatal);
+  IGNORE(podule);
+
+ // devices_deregister(pw, 1);
+
+  return 0;
+}
+
+void module_service(int service, _kernel_swi_regs *r, void *pw)
+{
+  IGNORE(r);
+
+  switch (service)
+  {
+    case Service_BlockDevices_Started:
+      dprintf(("", "Service_BlockDevices_Started\n"));
+  //    devices_register(pw);
+      break;
+
+    case Service_BlockDevices_Dying:
+      dprintf(("", "Service_BlockDevices_Dying\n"));
+ //     devices_deregister(pw, 0);
+      break;
+  }
+}
+
+_kernel_oserror *driver_handler(_kernel_swi_regs *r, void *pw)
+{
+  dprintf(("", "driver_handler for op %d on device %d\n", r->r[8], r->r[0]));
+
+  //nvme_device_t *device = devices_find(r->r[0]);
+  //if (!device) return &err_UnknownDevice;
+
+  switch (r->r[8]) {
+  case BlockDevices_Reason_Read:
+  case BlockDevices_Reason_Write:
+  case BlockDevices_Reason_Verify:
+    //return nvme_io(r->r[8], device, 0, (transfer_block_t *)r->r[2], pw);
+  case BlockDevices_Reason_DeviceOp:
+    //return nvme_device_op(device, r, pw);
+  case BlockDevices_Reason_MediaOp:
+    //return nvme_media_op(device, r, pw);
+  case BlockDevices_Reason_SectorOp:
+    //return nvme_sector_op(device, r, pw);
+  case BlockDevices_Reason_DriverOp:
+    //return nvme_driver_op(device, r->r[2],
+    //                      (nvme_sqe_t*)r->r[3], (nvme_cqe_t*)r->r[4]);
+  default:
+    return 0;//&err_BadReason;
+  }
+}
