@@ -1,0 +1,76 @@
+#ifndef ATA_H
+#define ATA_H
+
+#include <stdint.h>
+
+/** Parameter blocks for device control commands */
+typedef uint8_t ataop_param_device_control_t;
+
+/** Parameter blocks for CHS and 28-bit LBA commands */
+typedef struct
+{
+  uint8_t features;
+  uint8_t count;
+  uint8_t lba[3];
+  uint8_t device;
+  uint8_t command;
+}
+ataop_param_lba28_t;
+
+/** Parameter blocks for 48-bit LBA commands */
+typedef struct
+{
+  uint8_t  features;
+  uint16_t count;
+  uint8_t  lba[6];
+  uint8_t  device;
+  uint8_t  command;
+}
+ataop_param_lba48_t;
+
+/** Control blocks for packet operations */
+typedef struct
+{
+  uint8_t operation_code;
+  uint8_t service_action;
+  uint8_t lba3;
+  uint8_t lba2;
+  uint8_t lba1;
+  uint8_t lba0;
+  uint8_t length3;
+  uint8_t length2;
+  uint8_t length1;
+  uint8_t length0;
+  uint8_t reserved;
+  uint8_t control;
+}
+atapacketop_control_t;
+
+/* ATA commands */
+enum
+{
+  ATACOMMAND_RESET_DEVICE              = 0x08,
+  ATACOMMAND_READ_SECTORS              = 0x20,
+  ATACOMMAND_READ_SECTORS_EXT          = 0x24,
+  ATACOMMAND_READ_DMA_EXT              = 0x25,
+  ATACOMMAND_WRITE_SECTORS             = 0x30,
+  ATACOMMAND_WRITE_SECTORS_EXT         = 0x34,
+  ATACOMMAND_WRITE_DMA_EXT             = 0x35,
+  ATACOMMAND_READ_VERIFY_SECTORS       = 0x40,
+  ATACOMMAND_READ_VERIFY_SECTORS_EXT   = 0x42,
+  ATACOMMAND_EXECUTE_DEVICE_DIAGNOSTIC = 0x90,
+  ATACOMMAND_PACKET                    = 0xA0,
+  ATACOMMAND_IDENTIFY_PACKET_DEVICE    = 0xA1,
+  ATACOMMAND_READ_DMA                  = 0xC8,
+  ATACOMMAND_WRITE_DMA                 = 0xCA,
+  ATACOMMAND_STANDBY                   = 0xE2,
+  ATACOMMAND_IDLE                      = 0xE3,
+  ATACOMMAND_CHECK_POWER_MODE          = 0xE5,
+  ATACOMMAND_IDENTIFY_DEVICE           = 0xEC,
+};
+
+/* Bits in the device byte of ATA commands */
+#define DEVICE_MAGIC 0xA0 /**< These bits must always be set for compatibility with older drives */
+#define DEVICE_LBA   0x40 /**< Set this in read/write commands, unless drive only supports CHS addressing */
+
+#endif

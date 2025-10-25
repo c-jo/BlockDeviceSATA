@@ -1,0 +1,26 @@
+#ifndef __SATADEVICE_H
+#define __SATADEVICE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "Interface/BlockDevices.h"
+
+typedef struct sata_device_s
+{
+    struct sata_device_s *next;
+    unsigned block_device_id;
+    unsigned device_id;
+    unsigned port_id;
+    uint64_t sectors;
+    uint32_t sector_size;
+    bool     lba48;
+    char     model[44];
+    char     firmware[20];
+    device_info_t info;
+} sata_device_t;
+
+extern sata_device_t *sata_devices;
+
+#endif // __SATADEVICE_H
+
